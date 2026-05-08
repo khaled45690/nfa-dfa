@@ -7,23 +7,41 @@ import java.util.stream.Collectors;
 /** Minimizes a DFA using Hopcroft's algorithm. */
 public final class DFAMinimizer {
 
-    /** Returns a minimized DFA equivalent to the input DFA. */
+    /**
+     * Holds the minimized DFA and the sequence of partition snapshots captured
+     * during Hopcroft's algorithm (one entry per step where the partition changed).
+     */
+    public record MinimizationResult(DFA minimized, List<List<Set<State>>> partitionSteps) {}
+
+    /** Returns a minimized DFA equivalent to the input. */
     public static DFA minimize(DFA dfa) {
-        Set<State> allStates  = dfa.states();
-        Set<State> accepting  = dfa.acceptStates();
-        Set<State> rejecting  = new LinkedHashSet<>(allStates);
+        return minimizeWithSteps(dfa).minimized();
+    }
+
+    /**
+     * Minimizes the DFA and records each partition state whenever it changes.
+     * Use {@link MinimizationResult#partitionSteps()} to inspect the refinement history.
+     */
+    public static MinimizationResult minimizeWithSteps(DFA dfa) {
+        Set<State> allStates = dfa.states();
+        Set<State> accepting = dfa.acceptStates();
+        Set<State> rejecting = new LinkedHashSet<>(allStates);
         rejecting.removeAll(accepting);
 
-        // Degenerate: all states equivalent
+        List<List<Set<State>>> history = new ArrayList<>();
+
+        // Degenerate: all states are equivalent
         if (accepting.isEmpty() || rejecting.isEmpty()) {
-            return buildFromPartition(dfa, List.of(new LinkedHashSet<>(allStates)));
+            List<Set<State>> single = List.of(new LinkedHashSet<>(allStates));
+            history.add(copyPartition(single));
+            return new MinimizationResult(buildFromPartition(dfa, single), history);
         }
 
         List<Set<State>> partition = new ArrayList<>();
         partition.add(new LinkedHashSet<>(accepting));
         partition.add(new LinkedHashSet<>(rejecting));
+        history.add(copyPartition(partition));   // step 0 — initial partition
 
-        // Worklist: track partition blocks to refine against
         Set<Set<State>> worklist = new LinkedHashSet<>();
         worklist.add(new LinkedHashSet<>(accepting));
 
@@ -31,8 +49,10 @@ public final class DFAMinimizer {
             Set<State> A = worklist.iterator().next();
             worklist.remove(A);
 
+            boolean changed = false;
+
             for (char c : dfa.alphabet()) {
-                // X = states whose c-transition lands inside A
+                // X = set of states whose c-transition lands in A
                 Set<State> X = new LinkedHashSet<>();
                 for (State s : allStates) {
                     State next = dfa.transition(s, c);
@@ -55,23 +75,32 @@ public final class DFAMinimizer {
                             worklist.add(inter);
                             worklist.add(diff);
                         } else {
-                            // Add the smaller half to keep complexity O(n log n)
+                            // Add the smaller half — keeps complexity O(n log n)
                             worklist.add(inter.size() <= diff.size() ? inter : diff);
                         }
+                        changed = true;
                     } else {
                         next.add(Y);
                     }
                 }
                 partition = next;
             }
+
+            if (changed) history.add(copyPartition(partition));
         }
 
-        return buildFromPartition(dfa, partition);
+        return new MinimizationResult(buildFromPartition(dfa, partition), history);
     }
 
-    /** Constructs a DFA from a given equivalence partition of the original DFA's states. */
+    /** Deep-copies a partition list so snapshots are immutable. */
+    private static List<Set<State>> copyPartition(List<Set<State>> p) {
+        List<Set<State>> copy = new ArrayList<>();
+        for (Set<State> block : p) copy.add(new LinkedHashSet<>(block));
+        return Collections.unmodifiableList(copy);
+    }
+
+    /** Constructs the minimized DFA from a given equivalence partition. */
     private static DFA buildFromPartition(DFA dfa, List<Set<State>> partition) {
-        // Assign a representative State to each partition block
         Map<State, State> stateToRep = new LinkedHashMap<>();
         Map<Set<State>, State> blockToRep = new LinkedHashMap<>();
 
@@ -96,7 +125,6 @@ public final class DFAMinimizer {
         }
         builder.setStart(stateToRep.get(dfa.startState()));
 
-        // Use any state in each block to derive the outgoing transitions
         Set<State> processed = new LinkedHashSet<>();
         for (Set<State> block : partition) {
             State rep = blockToRep.get(block);
